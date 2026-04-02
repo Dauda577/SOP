@@ -1,0 +1,163 @@
+name: POS System CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  # ── Job 1: Lint ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & format check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Check formatting (black)
+        run: black --check --diff .
+
+      - name: Lint (flake8)
+        run: |
+          flake8 . \
+            --count \
+            --max-line-length=127 \
+            --max-complexity=10 \
+            --exclude=.venv,migrations,dist,build \
+            --statistics
+
+  # ── Job 2: Security scan ─────────────────────────────────────────────────────
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Scan code (bandit)
+        run: |
+          bandit -r . \
+            --exclude .venv,tests,migrations,dist,build \
+            -f json \
+            -o bandit-report.json
+        continue-on-error: true
+
+      - name: Upload bandit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+      - name: Scan dependencies (pip-audit)
+        run: pip-audit -r requirements.txt
+
+  # ── Job 3: Tests ─────────────────────────────────────────────────────────────
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: windows-latest  # Match your target OS (Windows desktop app)
+    needs: [lint, security]
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        env:
+          DATABASE_URL: sqlite:///test_pos.db
+          SECRET_KEY: ci-test-secret-key-not-for-production
+          DEFAULT_ADMIN_PASSWORD: AdminPass123
+          DEFAULT_MANAGER_PASSWORD: ManagerPass123
+          DEFAULT_CASHIER_PASSWORD: CashierPass123
+          LOG_LEVEL: WARNING
+        run: |
+          pytest tests/ -v --tb=short --cov=. --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+
+  # ── Job 4: Build .exe (only on tagged releases) ───────────────────────────────
+  build-exe:
+    name: Build Windows .exe
+    runs-on: windows-latest
+    needs: test
+    if: github.event_name == 'release'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build executable
+        env:
+          DATABASE_URL: sqlite:///pos_system.db
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: |
+          pyinstaller --onedir `
+            --name "POS_System_${{ github.ref_name }}" `
+            --collect-all bcrypt `
+            --hidden-import=bcrypt `
+            --hidden-import=database.db `
+            --hidden-import=modules.auth `
+            --add-data "logs;logs" `
+            main.py
+
+      - name: Upload .exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: POS_System_${{ github.ref_name }}
+          path: dist/POS_System_${{ github.ref_name }}/
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/POS_System_${{ github.ref_name }}/**
