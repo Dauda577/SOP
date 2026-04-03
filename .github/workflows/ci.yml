@@ -63,7 +63,7 @@ jobs:
           bandit -r . \
             --exclude .venv,tests,migrations,dist,build \
             -f json \
-            -o bandit-report.json
+            -o bandit-report.json || true
         continue-on-error: true
 
       - name: Upload bandit report
