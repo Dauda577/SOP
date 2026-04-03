@@ -154,3 +154,10 @@ logs/
 *.tmp
 *.temp</content>
 <parameter name="filePath">c:\Users\dauda\Desktop\websites\SOP\.gitignore
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+pos_system.db
+*.db
