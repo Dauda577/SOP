@@ -240,9 +240,7 @@ class ReportsView(tk.Toplevel):
         ).pack(side="right")
 
         range_cols = ("Date", "Transactions", "Revenue (GHS)", "Discounts", "Tax")
-        self.range_tree = ttk.Treeview(
-            range_frame, columns=range_cols, show="headings"
-        )
+        self.range_tree = ttk.Treeview(range_frame, columns=range_cols, show="headings")
         for col in range_cols:
             self.range_tree.heading(col, text=col)
             self.range_tree.column(col, width=150, anchor="center")
@@ -406,9 +404,7 @@ class ReportsView(tk.Toplevel):
             "Discounts (GHS)",
             "Tax (GHS)",
         )
-        self.week_tree = ttk.Treeview(
-            day_frame, columns=day_cols, show="headings"
-        )
+        self.week_tree = ttk.Treeview(day_frame, columns=day_cols, show="headings")
         col_w = {
             "Day": 100,
             "Date": 110,

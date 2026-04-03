@@ -237,7 +237,6 @@ class TestAuth:
 
 
 class TestInventory:
-
     def test_update_inventory_add(self, sample_product):
         from database.db import update_inventory, get_product_with_inventory
 
@@ -275,6 +274,7 @@ class TestInventory:
 
     def test_get_low_stock_products(self, db_conn, sample_product):
         from database.db import get_low_stock_products
+
         """A product with quantity <= low_stock_alert should appear in low stock."""
 
         pid = sample_product["product_id"]
