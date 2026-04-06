@@ -383,7 +383,7 @@ def get_profit_analysis(start_date: str = None, end_date: str = None) -> Dict:
                 SUM(s.tax) AS total_tax,
                 SUM(si.quantity * p.price) AS estimated_cogs,
                 SUM(s.total_amount) - SUM(si.quantity * p.price) AS estimated_gross_profit,
-                (SUM(s.total_amount) - SUM(si.quantity * p.price)) / NULLIF(SUM(s.total_amount), 0) * 100 AS profit_margin_percentage  # noqa: E501
+                (SUM(s.total_amount) - SUM(si.quantity * p.price)) / NULLIF(SUM(s.total_amount), 0) * 100 AS profit_margin_percentage
             FROM sales s
             JOIN sale_items si ON s.sale_id = si.sale_id
             JOIN products p ON si.product_id = p.product_id
