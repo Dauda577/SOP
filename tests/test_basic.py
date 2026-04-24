@@ -285,3 +285,177 @@ class TestInventory:
         low = get_low_stock_products()
         ids = [p["product_id"] for p in low]
         assert pid in ids
+
+
+class TestSales:
+    def test_generate_receipt_without_payment_row(self, sample_product):
+        from modules.sales import cart_add_item, generate_receipt, process_sale
+
+        cart = []
+        cart, ok, _ = cart_add_item(cart, sample_product, 1)
+        assert ok is True
+
+        ok, sale_id, change, msg = process_sale(
+            cart=cart,
+            user_id=1,
+            payment_method="momo",
+            amount_paid=sample_product["price"],
+        )
+
+        assert ok is True, msg
+        assert change == 0
+
+        receipt = generate_receipt(sale_id)
+
+        assert "Receipt #" in receipt
+        assert "Amount Paid:" in receipt
+        assert f"GHS{sample_product['price']:>7.2f}" in receipt
+
+
+class TestMoMoPayments:
+    def test_validate_ghana_phone_detects_provider(self):
+        from utils.momo_payments import validate_ghana_phone
+
+        valid, normalized, provider = validate_ghana_phone("+233 24 123 4567")
+        assert valid is True
+        assert normalized == "0241234567"
+        assert provider == "mtn"
+
+    def test_initialize_momo_checkout_creates_pending_payment(
+        self, db_conn, sample_product, monkeypatch
+    ):
+        from modules.sales import cart_add_item, process_sale
+        from utils.momo_payments import initialize_momo_checkout
+
+        cart = []
+        cart, ok, _ = cart_add_item(cart, sample_product, 1)
+        assert ok is True
+
+        ok, sale_id, _, msg = process_sale(
+            cart=cart,
+            user_id=1,
+            payment_method="momo",
+            amount_paid=sample_product["price"],
+        )
+        assert ok is True, msg
+
+        monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk_test_xxx")
+        monkeypatch.setattr(
+            "utils.momo_payments._paystack_request",
+            lambda method, path, payload=None: {
+                "status": True,
+                "message": "Authorization URL created",
+                "data": {
+                    "authorization_url": "https://checkout.paystack.test/mock",
+                    "reference": "PSK-CHK-001",
+                },
+            },
+        )
+        monkeypatch.setattr(
+            "utils.momo_payments._build_reference", lambda sale_id: "PSK-CHK-001"
+        )
+
+        success, reference, checkout_url, message = initialize_momo_checkout(
+            amount=sample_product["price"],
+            sale_id=sale_id,
+            customer_phone="0241234567",
+        )
+
+        assert success is True
+        assert reference == "PSK-CHK-001"
+        assert checkout_url == "https://checkout.paystack.test/mock"
+        assert "Authorization URL created" in message
+
+        cursor = db_conn.cursor()
+        cursor.execute(
+            "SELECT status, provider FROM payments WHERE reference = ?",
+            (reference,),
+        )
+        payment = cursor.fetchone()
+        assert payment is not None
+        assert payment[0] == "pending"
+        assert payment[1] == "checkout"
+
+    def test_paystack_momo_initiate_and_verify_updates_payment_row(
+        self, db_conn, sample_product, monkeypatch
+    ):
+        from modules.sales import cart_add_item, process_sale
+        from utils.momo_payments import initiate_momo_payment, verify_momo_payment
+
+        cart = []
+        cart, ok, _ = cart_add_item(cart, sample_product, 1)
+        assert ok is True
+
+        ok, sale_id, _, msg = process_sale(
+            cart=cart,
+            user_id=1,
+            payment_method="momo",
+            amount_paid=sample_product["price"],
+        )
+        assert ok is True, msg
+
+        responses = [
+            {
+                "status": True,
+                "message": "Charge attempted",
+                "data": {"status": "pending", "reference": "PSK-REF-001"},
+            },
+            {
+                "status": True,
+                "message": "Verification successful",
+                "data": {
+                    "status": "success",
+                    "amount": int(sample_product["price"] * 100),
+                    "fees": 25,
+                    "gateway_response": "Approved",
+                    "metadata": {"local_provider": "mtn"},
+                },
+            },
+        ]
+
+        monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk_test_xxx")
+
+        def fake_paystack_request(method, path, payload=None):
+            response = responses.pop(0)
+            if path == "/charge":
+                assert method == "POST"
+                assert payload["currency"] == "GHS"
+                assert payload["mobile_money"]["provider"] == "mtn"
+            return response
+
+        monkeypatch.setattr(
+            "utils.momo_payments._paystack_request", fake_paystack_request
+        )
+        monkeypatch.setattr(
+            "utils.momo_payments._build_reference", lambda sale_id: "PSK-REF-001"
+        )
+
+        success, reference, message = initiate_momo_payment(
+            phone="0241234567",
+            amount=sample_product["price"],
+            sale_id=sale_id,
+            provider="mtn",
+        )
+        assert success is True
+        assert reference == "PSK-REF-001"
+        assert "Charge" in message or "Payment" in message
+
+        cursor = db_conn.cursor()
+        cursor.execute("SELECT status FROM payments WHERE reference = ?", (reference,))
+        payment = cursor.fetchone()
+        assert payment is not None
+        assert payment[0] == "pending"
+
+        success, status, message = verify_momo_payment(reference)
+        assert success is True
+        assert status == "success"
+        assert "Approved" in message
+
+        cursor.execute(
+            "SELECT status, amount_paid, fee FROM payments WHERE reference = ?",
+            (reference,),
+        )
+        updated = cursor.fetchone()
+        assert updated[0] == "completed"
+        assert float(updated[1]) == sample_product["price"]
+        assert float(updated[2]) == 0.25

@@ -316,11 +316,23 @@ def get_sale_details(sale_id: int) -> dict:
                s.tax, s.payment_method,
                u.full_name AS cashier,
                c.full_name AS customer, c.phone AS customer_phone,
-               p.amount_paid, p.change_given
+               (
+                   SELECT p.amount_paid
+                   FROM payments p
+                   WHERE p.sale_id = s.sale_id
+                   ORDER BY p.payment_date DESC, p.payment_id DESC
+                   LIMIT 1
+               ) AS amount_paid,
+               (
+                   SELECT p.change_given
+                   FROM payments p
+                   WHERE p.sale_id = s.sale_id
+                   ORDER BY p.payment_date DESC, p.payment_id DESC
+                   LIMIT 1
+               ) AS change_given
         FROM sales s
         JOIN users u ON s.user_id = u.user_id
         LEFT JOIN customers c ON s.customer_id = c.customer_id
-        LEFT JOIN payments p ON s.sale_id = p.sale_id
         WHERE s.sale_id = ?
     """,
         (sale_id,),
@@ -332,6 +344,14 @@ def get_sale_details(sale_id: int) -> dict:
         return {}
 
     sale_dict = dict(sale)
+    sale_dict["amount_paid"] = (
+        sale_dict["amount_paid"]
+        if sale_dict["amount_paid"] is not None
+        else sale_dict["total_amount"]
+    )
+    sale_dict["change_given"] = (
+        sale_dict["change_given"] if sale_dict["change_given"] is not None else 0.0
+    )
 
     cursor.execute(
         """
@@ -496,8 +516,9 @@ def generate_receipt(sale_id: int, store_name: str = "POS System") -> str:
         )
 
     lines.append("-" * 40)
+    subtotal = sale["total_amount"] + sale["discount"] - sale["tax"]
     lines.append(
-        f"{'Subtotal:':<32} GHS{sale['total_amount'] + sale['discount'] - sale['tax']:>7.2f}"
+        f"{'Subtotal:':<32} GHS{subtotal:>7.2f}"
     )
     if sale["discount"] > 0:
         lines.append(f"{'Discount:':<32} -GHS{sale['discount']:>6.2f}")

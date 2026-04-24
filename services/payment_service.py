@@ -187,25 +187,13 @@ def process_momo_checkout(
     provider: str,
 ) -> Tuple[bool, Optional[str], str]:
     """
-    Process a MoMo sale through Paystack.
+    Initiate a Paystack MoMo charge for an already-recorded sale.
 
-    Records the sale in the DB first, then initiates the Paystack charge.
     Returns (success, paystack_reference, message).
     """
-    # 1. Record the sale
-    ok, txn_id, msg = PaymentService.checkout_payment(
-        user_id=user_id,
-        amount_paid=amount_paid,
-        total_amount=total_amount,
-        sale_id=sale_id,
-        payment_method="momo",
-        phone_number=phone_number,
-        provider=provider,
-    )
-    if not ok:
-        return False, None, msg
+    if amount_paid < total_amount:
+        return False, None, "MoMo amount cannot be less than the sale total."
 
-    # 2. Initiate Paystack charge
     try:
         from utils.momo_payments import initiate_momo_payment
 
@@ -218,8 +206,7 @@ def process_momo_checkout(
         return success, ref, momo_msg
     except Exception as e:
         logger.error("Paystack MoMo initiation error: %s", e)
-        # Sale is already recorded — return partial success so cashier knows
-        return True, txn_id, f"Sale recorded but MoMo push failed: {str(e)}"
+        return False, None, f"MoMo push failed: {str(e)}"
 
 
 def process_card_checkout(

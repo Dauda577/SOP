@@ -19,6 +19,7 @@ from modules.sales import (
 import logging
 import os
 import tempfile
+import webbrowser
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,8 @@ class CashierView(tk.Toplevel):
         self._last_momo_provider = ""
         self._last_momo_amount = 0.0
         self._last_momo_sale_id = None
+        self._last_momo_checkout_url = ""
+        self._last_momo_flow = ""
 
         self.title(f"POS — Cashier ({current_user['full_name']})")
         self.geometry("1280x700")
@@ -457,11 +460,13 @@ class CashierView(tk.Toplevel):
             fg="#333",
         ).pack(anchor="w", **pad)
         self.payment_var = tk.StringVar(value="cash")
-        for text, val, color in [
-            ("💵  Cash", "cash", "#27ae60"),
-            ("📱  Mobile Money (MoMo)", "momo", "#f5a623"),
-            ("💳  Card", "card", "#2980b9"),
-        ]:
+        payment_options = [
+            ("Cash", "cash", "#27ae60"),
+            ("MoMo Checkout Page", "momo_checkout", "#f5a623"),
+            ("Direct MoMo", "momo_direct", "#d17a00"),
+            ("Card", "card", "#2980b9"),
+        ]
+        for text, val, color in payment_options:
             rb = tk.Radiobutton(
                 frame,
                 text=text,
@@ -489,7 +494,7 @@ class CashierView(tk.Toplevel):
         self.momo_phone_var = tk.StringVar()
         self.momo_phone_var.trace("w", self._on_phone_change)
 
-        self._build_momo_panel_contents()
+        self._build_momo_panel_contents("momo_checkout")
 
         self.payment_var.trace("w", self._on_payment_method_change)
         self.momo_frame.pack_forget()
@@ -614,7 +619,11 @@ class CashierView(tk.Toplevel):
             pass
 
     def _on_payment_method_change(self, *args):
-        if self.payment_var.get() == "momo":
+        mode = self.payment_var.get()
+        if mode in ("momo_checkout", "momo_direct"):
+            for widget in self.momo_frame.winfo_children():
+                widget.destroy()
+            self._build_momo_panel_contents(mode)
             self.momo_frame.pack(
                 fill="x", padx=12, pady=(0, 6), before=self._amount_label
             )
@@ -623,32 +632,47 @@ class CashierView(tk.Toplevel):
             self.momo_phone_var.set("")
             self.provider_badge.config(text="")
             self._last_momo_ref = ""
+            self._last_momo_checkout_url = ""
+            self._last_momo_flow = ""
             self.verify_btn.config(state="disabled")
 
     def _show_momo_waiting_state(
-        self, sale_id, phone, provider_name, amount, provider_key=""
+        self,
+        sale_id,
+        phone,
+        provider_name,
+        amount,
+        provider_key="",
+        flow_type="direct",
+        checkout_url="",
     ):
         """Replace MoMo input panel with a compact waiting-for-approval state."""
-        # Store details so we can resend if the customer abandons
         self._last_momo_phone = phone
         self._last_momo_provider = provider_key
         self._last_momo_amount = amount
         self._last_momo_sale_id = sale_id
+        self._last_momo_checkout_url = checkout_url
+        self._last_momo_flow = flow_type
 
         for widget in self.momo_frame.winfo_children():
             widget.destroy()
 
         tk.Label(
             self.momo_frame,
-            text="⏳  Awaiting Customer Approval",
+            text=(
+                "Hosted Checkout In Progress"
+                if flow_type == "checkout"
+                else "Awaiting Customer Approval"
+            ),
             font=("Segoe UI", 10, "bold"),
             bg="#fffbf0",
             fg="#8a6000",
         ).pack(anchor="w", padx=10, pady=(10, 4))
 
         info = (
+            f"Flow:     {'Hosted Checkout' if flow_type == 'checkout' else 'Direct Charge'}\n"
             f"Network:  {provider_name}\n"
-            f"Phone:    {phone}\n"
+            f"Phone:    {phone or 'Entered on checkout page'}\n"
             f"Amount:   GHS {amount:.2f}\n"
             f"Sale #:   {sale_id}"
         )
@@ -663,7 +687,11 @@ class CashierView(tk.Toplevel):
 
         tk.Label(
             self.momo_frame,
-            text="💡 Ask customer to approve the prompt on their phone.",
+            text=(
+                "Customer should complete the payment on the Paystack checkout page."
+                if flow_type == "checkout"
+                else "Ask customer to approve the prompt on their phone."
+            ),
             font=("Segoe UI", 7),
             bg="#fffbf0",
             fg="#888",
@@ -675,7 +703,7 @@ class CashierView(tk.Toplevel):
 
         self.verify_btn = tk.Button(
             btn_row,
-            text="✔  Verify Payment",
+            text="Verify Payment",
             font=("Segoe UI", 10, "bold"),
             relief="flat",
             bg="#27ae60",
@@ -686,20 +714,32 @@ class CashierView(tk.Toplevel):
         )
         self.verify_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
 
-        tk.Button(
-            btn_row,
-            text="↺  Resend",
-            font=("Segoe UI", 9),
-            relief="flat",
-            bg="#f39c12",
-            fg="white",
-            cursor="hand2",
-            command=self._resend_momo_prompt,
-        ).pack(side="left")
+        if flow_type == "checkout":
+            tk.Button(
+                btn_row,
+                text="Open Checkout",
+                font=("Segoe UI", 9),
+                relief="flat",
+                bg="#f39c12",
+                fg="white",
+                cursor="hand2",
+                command=self._open_momo_checkout_again,
+            ).pack(side="left")
+        else:
+            tk.Button(
+                btn_row,
+                text="Resend",
+                font=("Segoe UI", 9),
+                relief="flat",
+                bg="#f39c12",
+                fg="white",
+                cursor="hand2",
+                command=self._resend_momo_prompt,
+            ).pack(side="left")
 
         tk.Button(
             self.momo_frame,
-            text="✖  Cancel & New Sale",
+            text="Cancel & New Sale",
             font=("Segoe UI", 9),
             relief="flat",
             bg="#e74c3c",
@@ -713,7 +753,7 @@ class CashierView(tk.Toplevel):
     def _reset_momo_panel(self):
         for widget in self.momo_frame.winfo_children():
             widget.destroy()
-        self._build_momo_panel_contents()
+        self._build_momo_panel_contents("momo_checkout")
         self.momo_frame.pack_forget()
         self.payment_var.set("cash")
         self._last_momo_ref = ""
@@ -721,15 +761,58 @@ class CashierView(tk.Toplevel):
         self._last_momo_provider = ""
         self._last_momo_amount = 0.0
         self._last_momo_sale_id = None
+        self._last_momo_checkout_url = ""
+        self._last_momo_flow = ""
 
-    def _build_momo_panel_contents(self):
+    def _build_momo_panel_contents(self, mode="momo_checkout"):
         tk.Label(
             self.momo_frame,
-            text="Mobile Money Details",
+            text=(
+                "MoMo Checkout Page"
+                if mode == "momo_checkout"
+                else "Direct Mobile Money"
+            ),
             font=("Segoe UI", 9, "bold"),
             bg="#fffbf0",
             fg="#8a6000",
         ).pack(anchor="w", padx=10, pady=(8, 4))
+
+        self.provider_badge = tk.Label(
+            self.momo_frame,
+            text="",
+            font=("Segoe UI", 8, "bold"),
+            bg="#fffbf0",
+            fg="#f5a623",
+        )
+        self.provider_badge.pack(anchor="w", padx=10)
+
+        if mode == "momo_checkout":
+            tk.Label(
+                self.momo_frame,
+                text=(
+                    "Paystack will open in the browser so the customer can choose "
+                    "Mobile Money, enter the code or OTP, and confirm the payment."
+                ),
+                font=("Segoe UI", 8),
+                bg="#fffbf0",
+                fg="#555",
+                wraplength=220,
+                justify="left",
+            ).pack(anchor="w", padx=10, pady=(0, 8))
+
+            self.verify_btn = tk.Button(
+                self.momo_frame,
+                text="Verify Payment",
+                font=("Segoe UI", 9),
+                relief="flat",
+                bg="#27ae60",
+                fg="white",
+                cursor="hand2",
+                command=self._verify_momo_payment,
+                state="disabled",
+            )
+            self.verify_btn.pack(fill="x", padx=10, pady=(0, 8))
+            return
 
         provider_row = tk.Frame(self.momo_frame, bg="#fffbf0")
         provider_row.pack(fill="x", padx=10, pady=(0, 6))
@@ -746,15 +829,6 @@ class CashierView(tk.Toplevel):
         )
         self.provider_combo.pack(side="left", padx=(6, 0))
         self.momo_provider_var.set("Auto-detect")
-
-        self.provider_badge = tk.Label(
-            self.momo_frame,
-            text="",
-            font=("Segoe UI", 8, "bold"),
-            bg="#fffbf0",
-            fg="#f5a623",
-        )
-        self.provider_badge.pack(anchor="w", padx=10)
 
         tk.Label(
             self.momo_frame,
@@ -775,7 +849,7 @@ class CashierView(tk.Toplevel):
 
         tk.Label(
             self.momo_frame,
-            text="💡 Customer will receive a MoMo prompt on their phone to approve.",
+            text="Customer will receive a MoMo prompt on their phone to approve.",
             font=("Segoe UI", 7),
             bg="#fffbf0",
             fg="#888",
@@ -784,7 +858,7 @@ class CashierView(tk.Toplevel):
 
         self.verify_btn = tk.Button(
             self.momo_frame,
-            text="✔ Verify Payment",
+            text="Verify Payment",
             font=("Segoe UI", 9),
             relief="flat",
             bg="#27ae60",
@@ -794,6 +868,15 @@ class CashierView(tk.Toplevel):
             state="disabled",
         )
         self.verify_btn.pack(fill="x", padx=10, pady=(0, 8))
+
+    def _open_momo_checkout_again(self):
+        if not self._last_momo_checkout_url:
+            self._pay_msg("No checkout page available to reopen.", error=True)
+            return
+        if webbrowser.open(self._last_momo_checkout_url):
+            self._pay_msg("Checkout page opened in browser.", error=False)
+        else:
+            self._pay_msg("Could not open checkout page automatically.", error=True)
 
     def _verify_momo_payment(self):
         """Poll Paystack to confirm the customer approved the MoMo prompt."""
@@ -991,7 +1074,7 @@ class CashierView(tk.Toplevel):
         totals = cart_totals(self.cart, discount, self.TAX_RATE)
         payment_method = self.payment_var.get()
 
-        if payment_method == "momo":
+        if payment_method in ("momo_checkout", "momo_direct"):
             amount_paid = totals["total"]
 
         if amount_paid < totals["total"]:
@@ -1000,55 +1083,66 @@ class CashierView(tk.Toplevel):
             )
             return
 
-        # ── MoMo ──────────────────────────────────────────────────────────
-        if payment_method == "momo":
-            phone = self.momo_phone_var.get().strip()
-            if not phone:
-                self._pay_msg("Enter customer phone number for MoMo.", error=True)
-                return
+        if payment_method in ("momo_checkout", "momo_direct"):
+            normalized = ""
+            provider_key = ""
+            provider_name = "Paystack Checkout"
 
-            try:
-                from utils.momo_payments import validate_ghana_phone, MOMO_PROVIDERS
-
-                valid, normalized, detected = validate_ghana_phone(phone)
-                if not valid:
-                    self._pay_msg(
-                        "Invalid phone number.\nUse format: 0241234567 or +233241234567",
-                        error=True,
-                    )
+            if payment_method == "momo_direct":
+                phone = self.momo_phone_var.get().strip()
+                if not phone:
+                    self._pay_msg("Enter customer phone number for MoMo.", error=True)
                     return
 
-                selected_display = self.momo_provider_var.get()
-                provider_key = self._provider_keys.get(selected_display, "auto")
-                if provider_key == "auto":
-                    provider_key = detected
+                try:
+                    from utils.momo_payments import validate_ghana_phone, MOMO_PROVIDERS
 
-                if not provider_key:
-                    self._pay_msg(
-                        "Could not detect network. Select provider manually.",
-                        error=True,
-                    )
+                    valid, normalized, detected = validate_ghana_phone(phone)
+                    if not valid:
+                        self._pay_msg(
+                            "Invalid phone number. Use format: 0241234567 or +233241234567",
+                            error=True,
+                        )
+                        return
+
+                    selected_display = self.momo_provider_var.get()
+                    provider_key = self._provider_keys.get(selected_display, "auto")
+                    if provider_key == "auto":
+                        provider_key = detected
+
+                    if not provider_key:
+                        self._pay_msg(
+                            "Could not detect network. Select provider manually.",
+                            error=True,
+                        )
+                        return
+
+                    provider_name = MOMO_PROVIDERS[provider_key]["name"]
+                except ImportError:
+                    normalized, provider_key, provider_name = phone, "mtn", "MTN MoMo"
+
+                confirm = messagebox.askyesno(
+                    "Confirm Direct MoMo Payment",
+                    f"Network:  {provider_name}\n"
+                    f"Phone:    {normalized}\n"
+                    f"Amount:   GHS {totals['total']:.2f}\n\n"
+                    f"Send payment prompt to customer's phone?",
+                )
+                if not confirm:
                     return
-
-                provider_name = MOMO_PROVIDERS[provider_key]["name"]
-
-            except ImportError:
-                normalized, provider_key, provider_name = phone, "mtn", "MTN MoMo"
-
-            confirm = messagebox.askyesno(
-                "Confirm MoMo Payment",
-                f"Network:  {provider_name}\n"
-                f"Phone:    {normalized}\n"
-                f"Amount:   GHS {totals['total']:.2f}\n\n"
-                f"Send payment prompt to customer's phone?",
-            )
-            if not confirm:
-                return
+            else:
+                confirm = messagebox.askyesno(
+                    "Open MoMo Checkout Page",
+                    f"Amount: GHS {totals['total']:.2f}\n\n"
+                    "Open Paystack checkout in the browser for the customer to complete payment?",
+                )
+                if not confirm:
+                    return
 
             ok, sale_id, change, msg = process_sale(
                 cart=self.cart,
                 user_id=self.current_user["user_id"],
-                payment_method=payment_method,
+                payment_method="momo",
                 amount_paid=amount_paid,
                 discount=discount,
                 tax_rate=self.TAX_RATE,
@@ -1059,51 +1153,85 @@ class CashierView(tk.Toplevel):
                 return
 
             try:
-                from utils.momo_payments import initiate_momo_payment
+                if payment_method == "momo_checkout":
+                    from utils.momo_payments import initialize_momo_checkout
 
-                success, ref, momo_msg = initiate_momo_payment(
-                    phone=normalized,
-                    amount=totals["total"],
-                    sale_id=sale_id,
-                    provider=provider_key,
-                )
-                if success:
-                    self._last_momo_ref = ref
-                    self._show_momo_waiting_state(
-                        sale_id=sale_id,
-                        phone=normalized,
-                        provider_name=provider_name,
+                    success, ref, checkout_url, momo_msg = initialize_momo_checkout(
                         amount=totals["total"],
-                        provider_key=provider_key,
+                        sale_id=sale_id,
+                        customer_phone=self.momo_phone_var.get().strip(),
                     )
-                    self.last_sale_id = sale_id
-                    self.receipt_btn.config(state="normal")
-                    self.save_receipt_btn.config(state="normal")
-                    self.cart = cart_clear(self.cart)
-                    self._refresh_cart_tree()
-                    self._refresh_totals()
-                    self.discount_entry_var.set("0")
-                    self.amount_paid_var.set("0")
-                    self.current_customer_id = None
-                    self.current_customer_name = None
-                    self.customer_label.config(text="Customer: Walk-in")
-                    self._search_products()
-                    self._check_low_stock()
-                    self._update_status_bar()
-                    if messagebox.askyesno("Receipt", "Print receipt?"):
-                        self._show_receipt()
-                    return
+                    if success:
+                        self._last_momo_ref = ref
+                        self._show_momo_waiting_state(
+                            sale_id=sale_id,
+                            phone="",
+                            provider_name="Paystack Checkout",
+                            amount=totals["total"],
+                            provider_key="checkout",
+                            flow_type="checkout",
+                            checkout_url=checkout_url,
+                        )
+                        webbrowser.open(checkout_url)
+                    else:
+                        self._pay_msg(
+                            f"Sale #{sale_id} recorded but checkout setup failed:\n{momo_msg}",
+                            error=True,
+                        )
+                        return
                 else:
-                    self._pay_msg(
-                        f"Sale #{sale_id} recorded but MoMo push failed:\n{momo_msg}",
-                        error=True,
+                    from utils.momo_payments import initiate_momo_payment
+
+                    success, ref, momo_msg = initiate_momo_payment(
+                        phone=normalized,
+                        amount=totals["total"],
+                        sale_id=sale_id,
+                        provider=provider_key,
                     )
-                    return
+                    if success:
+                        self._last_momo_ref = ref
+                        self._show_momo_waiting_state(
+                            sale_id=sale_id,
+                            phone=normalized,
+                            provider_name=provider_name,
+                            amount=totals["total"],
+                            provider_key=provider_key,
+                            flow_type="direct",
+                        )
+                    else:
+                        self._pay_msg(
+                            f"Sale #{sale_id} recorded but MoMo push failed:\n{momo_msg}",
+                            error=True,
+                        )
+                        return
+
+                self.last_sale_id = sale_id
+                self.receipt_btn.config(state="normal")
+                self.save_receipt_btn.config(state="normal")
+                self.cart = cart_clear(self.cart)
+                self._refresh_cart_tree()
+                self._refresh_totals()
+                self.discount_entry_var.set("0")
+                self.amount_paid_var.set("0")
+                self.current_customer_id = None
+                self.current_customer_name = None
+                self.customer_label.config(text="Customer: Walk-in")
+                self._search_products()
+                self._check_low_stock()
+                self._update_status_bar()
+                self._pay_msg(
+                    (
+                        f"Checkout page opened for sale #{sale_id}."
+                        if payment_method == "momo_checkout"
+                        else f"MoMo prompt sent for sale #{sale_id}."
+                    ),
+                    error=False,
+                )
+                return
             except ImportError:
                 self._last_momo_ref = f"MOMO-{sale_id}"
                 msg = f"Sale #{sale_id} complete (MoMo module unavailable)."
 
-        # ── Cash / Card ───────────────────────────────────────────────────
         else:
             ok, sale_id, change, msg = process_sale(
                 cart=self.cart,
@@ -1117,9 +1245,8 @@ class CashierView(tk.Toplevel):
             if not ok:
                 self._pay_msg(msg, error=True)
                 return
-            msg = f"✔ Sale #{sale_id} complete! Change: GHS {change:.2f}"
+            msg = f"Sale #{sale_id} complete! Change: GHS {change:.2f}"
 
-        # ── Post-sale ─────────────────────────────────────────────────────
         self.last_sale_id = sale_id
         self._pay_msg(msg, error=False)
         self.receipt_btn.config(state="normal")
@@ -1144,7 +1271,7 @@ class CashierView(tk.Toplevel):
         if messagebox.askyesno("Receipt", "Print receipt?"):
             self._show_receipt()
 
-    # ── Receipt ───────────────────────────────────────────────────────────────
+    # Receipt
 
     def _show_receipt(self):
         if not self.last_sale_id:
